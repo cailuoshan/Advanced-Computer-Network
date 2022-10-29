@@ -9,12 +9,25 @@
 #include <pthread.h>     
 #include <stdlib.h>
 
+#include <assert.h>
+
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
  
-void Create_80_port();
-void Create_443_port();
+void *Create_80_port();
+void *Create_443_port();
+void *Handle_HTTP_Request(int cs);
+void *Handle_HTTPS_Request(void *args);
+SSL_CTX * InitSSL();
+
+struct param
+{
+    SSL *ssl;
+    int csock;
+};
+
+
 
 int main(int argc, const char *argv[]){
     // create 2 threads for listening 80 and 443 ports
@@ -24,13 +37,14 @@ int main(int argc, const char *argv[]){
         perror("pthread_create failed!");
     if (pthread_create(&new_thread_443, NULL, Create_443_port, NULL) != 0)
         perror("pthread_create failed!");
-    
-    sleep(1);
+    while(1){
+    	sleep(1);
+    }
     return 0;
 }
 
 /************************************************************************************************/
-void Create_80_port(){
+void *Create_80_port(){
     int s, cs;
     struct sockaddr_in server, client;
     
@@ -69,9 +83,10 @@ void Create_80_port(){
             fflush(stdout);
             return -1;
         }
-        printf("connection accepted.\n");
+        printf("connection accepted from port 80.\n");
         // create a thread to handle the request
         pthread_t new_thread;
+        printf("csock:%d\n",cs);
         if (pthread_create(&new_thread, NULL, Handle_HTTP_Request, cs) != 0)
             perror("pthread_create failed");
     }
@@ -83,25 +98,36 @@ void Create_80_port(){
  *  Range: bytes=100-200\r\n
  *  ......
  */
-void Handle_HTTP_Request(int csock){
+ 
+void get_path(char *msg,char *path){
+    char *ptr;
+    ptr=strstr(msg,"/");
+    int i=0;
+    while(*ptr!=' '){
+        path[i]=*ptr;
+        ptr++;
+        i++;
+    }
+    path[i]='\0';
+}
+
+void *Handle_HTTP_Request(int csock){
+    printf("csock:%d\n",csock);
     char msg[256];
     int msg_len = 0;
     // receive a message from client
     while ((msg_len = recv(csock, msg, sizeof(msg), 0)) > 0) {
         /* parse the request */
-        char url[50];
-        int i = 0;
-        char *str_start = strstr(msg,'http://');
-        while (*str_start != ' ')
-        {
-            url[i++]=*str_start;
-            str_start++;
-            
-            if (i==4)
-                url[i++] = 's';        
-        }
-        url[i] = '\0';
         
+        //only support GET method
+        char path[50];
+        char url[100];   
+        memset(path,0,sizeof(path));
+        printf("%s\n",msg);
+        get_path(msg, path);
+        strcpy(url,"https://10.0.0.1");
+        strcat(url,path);
+        printf("%s\n",url);
         /* ******************************* 
          * respond with 301 new location:  
          * HTTP/1.1 301 Moved Permanently
@@ -109,9 +135,11 @@ void Handle_HTTP_Request(int csock){
          * *******************************/
         char buf[1024];
         strcpy(buf, "HTTP/1.1 301 Moved Permanently\r\n");
-        sprintf(buf, "Location: %s\r\n",url);
-        strcat(buf,"\r\n");
-        send(csock, buf, strlen(buf), 0);
+        strcat(buf, "Location: ");
+        strcat(buf,url);
+        strcat(buf,"\r\n\r\n\r\n");
+        printf("%s\n",buf);
+        write(csock, buf, strlen(buf));
 
         // close server socket
         close(csock);
@@ -126,13 +154,8 @@ void Handle_HTTP_Request(int csock){
 
 
 /**************************************************************************************************/
-struct param
-{
-    SSL *ssl;
-    int csock;
-};
 
-void Create_443_port(){
+void *Create_443_port(){
     // init ssl certification
     SSL_CTX *ctx = InitSSL();
     if(ctx==NULL){
@@ -204,7 +227,7 @@ void Create_443_port(){
     SSL_CTX_free(ctx);
 }
 
-SSL_CTX *InitSSL(){
+SSL_CTX * InitSSL(){
     // init ssl environment
     SSL_library_init();
     SSL_load_error_strings();
@@ -227,9 +250,10 @@ SSL_CTX *InitSSL(){
  *  Range: bytes=100-200\r\n
  *  ......
  */
-void Handle_HTTPS_Request(void *args){
-    SSL *ssl = (*(param *)args).ssl;
-    int csock = (*(param *)args).csock;
+void *Handle_HTTPS_Request(void *args){
+    struct param *p = (struct param *)args;
+    SSL *ssl = (*p).ssl;
+    int csock = (*p).csock;
     char msg[256];
     int msg_len = 0;
     // receive a message from client and parse the request
@@ -274,6 +298,8 @@ void Handle_HTTPS_Request(void *args){
                 tmp[i]='\0';
                 range_end=atoi(tmp);
             }
+        }else{
+        
         }
         
         /* look up the file and make response */
@@ -283,7 +309,7 @@ void Handle_HTTPS_Request(void *args){
         SSL_shutdown(ssl);
         SSL_free(ssl);
         // close server socket
-        close(cs);
+        close(csock);
     }
      
     if (msg_len == 0) {
@@ -297,8 +323,8 @@ void https_serve_response(SSL *ssl, const char *filename, int range_start, int r
 {   
     FILE *file = NULL;
     struct stat file_stat;
-    char buf[1024];
-	if (stat(filename, &file_stat) == -1) {
+    char buf[1024*1024*50];
+    if (stat(filename, &file_stat) == -1) {
         /*no such file*/
         strcpy(buf, "HTTP/1.1 404 File Not Found\r\n");
     	strcat(buf,"Server: 10.0.0.1\r\n");
@@ -310,18 +336,19 @@ void https_serve_response(SSL *ssl, const char *filename, int range_start, int r
             perror("open failed");
 		    return;
         }
+        fseek(file, 0, SEEK_END);
+        int st_size = ftell(file);
+        fseek(file, 0, 0);  
         /*send HTTP header */
         strcpy(buf, "HTTP/1.1 200 OK\r\n");
-        SSL_write(ssl, buf, strlen(buf));
         sprintf(buf, "Content-Type: %s\r\n",filename);
-        SSL_write(ssl, buf, strlen(buf));
-        sprintf(buf, "Content-Length: %ld\r\n",st.st_size);  // need change!!
-        SSL_write(ssl, buf, strlen(buf));
+        sprintf(buf, "Content-Length: %ld\r\n",st_size); 
         strcpy(buf,"Server: 10.0.0.1\r\n");
         strcat(buf,"\r\n");
- 	    SSL_write(ssl, buf, strlen(buf));
+        SSL_write(ssl, buf, strlen(buf));
         /*send file body*/
         cat(ssl, file, range_start, range_end);
+        SSL_write(ssl, buf, strlen(buf));
         fclose(file);
     }
 
