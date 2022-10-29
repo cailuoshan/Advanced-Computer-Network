@@ -20,7 +20,7 @@ void *Create_443_port(void *);
 void *Handle_HTTP_Request(int cs);
 void *Handle_HTTPS_Request(void *args);
 void https_serve_response(SSL *ssl,char *filename, int range_start, int range_end);
-void cat(SSL *ssl, FILE *resource, int range_start, int range_end);
+void cat(SSL *ssl, FILE *resource, int range_start, int range_end,char *);
 SSL_CTX * InitSSL();
 
 struct param
@@ -267,7 +267,7 @@ void *Handle_HTTPS_Request(void *args){
     char msg[256];
     int msg_len = 0;
     // receive a message from client and parse the request
-    while ((msg_len = SSL_read(ssl, msg, sizeof(msg))) > 0) {
+    if((msg_len = SSL_read(ssl, msg, sizeof(msg))) > 0) {
         /* parse the request */
         char *str_start = NULL;
         int range_start = -1;
@@ -290,7 +290,7 @@ void *Handle_HTTPS_Request(void *args){
         str_start = strstr(msg,"Range");
         if (str_start != NULL)
         {
-            str_start += 12;
+            str_start += 13;
             char tmp[10];
             int i=0;
             while (*str_start != '-'){
@@ -306,54 +306,13 @@ void *Handle_HTTPS_Request(void *args){
             }
             if (i!=0){
                 tmp[i]='\0';
-                range_end=atoi(tmp);
+                range_end=atoi(tmp)+1;
             }
         }
         
         /* look up the file and make response */
         printf("args:%p,%p,%d,%d\n",ssl,path,range_start,range_end);
-        //https_serve_response(ssl,path, range_start, range_end);
-
-
-FILE *file = NULL;
-    struct stat file_stat;
-    
-    char buf[1024*1024*50];
-    SSL *ssl = NULL;
-    if (stat(path, &file_stat) == -1) {
-        //no such file
-        strcpy(buf, "HTTP/1.1 404 File Not Found\r\n");
-    	strcat(buf,"Server: 10.0.0.1\r\n");
-        strcat(buf,"Connection: close\r\n");
-    	strcat(buf,"\r\n");
-    	SSL_write(ssl, buf, strlen(buf));
-    }else {
-        if((file = fopen(path, "r"))==NULL){
-            perror("open failed");
-		    return;
-        }
-        fseek(file, 0, SEEK_END);
-        int st_size = ftell(file);
-        fseek(file, 0, 0);  
-        //send HTTP header 
-        strcpy(buf, "HTTP/1.1 200 OK\r\n");
-        sprintf(buf, "Content-Type: %s\r\n",path);
-        sprintf(buf, "Content-Length: %d\r\n",st_size); 
-        strcpy(buf,"Server: 10.0.0.1\r\n");
-        strcat(buf,"\r\n");
-        SSL_write(ssl, buf, strlen(buf));
-        //send file body
-        cat(ssl, file, range_start, range_end);
-        SSL_write(ssl, buf, strlen(buf));
-        fclose(file);
-    }
-
-
-
-
-
-        
-        
+        https_serve_response(ssl,path, range_start, range_end);      
     }
     
     if (msg_len == 0) {
@@ -368,13 +327,16 @@ void https_serve_response(SSL *ssl,char *filename, int range_start, int range_en
 {   
     FILE *file = NULL;
     struct stat file_stat;
-    char buf[1024*1024*50];
+    char buf[1024];
+    char *buffer = NULL;
+    memset(buf,0,1024);
     //SSL *ssl = NULL;
     if (stat(filename, &file_stat) == -1) {
         /*no such file*/
         strcpy(buf, "HTTP/1.1 404 File Not Found\r\n");
     	strcat(buf,"Server: 10.0.0.1\r\n");
         strcat(buf,"Connection: close\r\n");
+        strcat(buf,"Content-Length: 0\r\n");
     	strcat(buf,"\r\n");
     	SSL_write(ssl, buf, strlen(buf));
     }else {
@@ -384,18 +346,38 @@ void https_serve_response(SSL *ssl,char *filename, int range_start, int range_en
         }
         fseek(file, 0, SEEK_END);
         int st_size = ftell(file);
+        int state_range = 0;
+        if(range_start != -1){
+            if(range_end != -1)
+                st_size = range_end - range_start;
+            else{
+                st_size = st_size - range_start;
+            }
+            state_range = 1;
+        }else{
+            
+        }
         fseek(file, 0, 0);  
         /*send HTTP header */
-        strcpy(buf, "HTTP/1.1 200 OK\r\n");
+        buffer = (char *)malloc(st_size+1000);
+        memset(buffer,0,st_size+1000);
+        if(!state_range)
+        	strcpy(buffer, "HTTP/1.1 200 OK\r\n");
+        else
+        	strcpy(buffer, "HTTP/1.1 206 Partial Content\r\n");
         sprintf(buf, "Content-Type: %s\r\n",filename);
+        strcat(buffer,buf);
         sprintf(buf, "Content-Length: %d\r\n",st_size); 
+        strcat(buffer,buf);
         strcpy(buf,"Server: 10.0.0.1\r\n");
-        strcat(buf,"\r\n");
-        SSL_write(ssl, buf, strlen(buf));
+        strcat(buffer,buf);
+        strcat(buffer,"\r\n");
+        //SSL_write(ssl, buf, strlen(buf));
         /*send file body*/
-        cat(ssl, file, range_start, range_end);
-        SSL_write(ssl, buf, strlen(buf));
+        cat(ssl, file, range_start, range_end,buffer);
+        SSL_write(ssl, buffer, strlen(buffer));
         fclose(file);
+        free(buffer);
     }
 
     /*open the file*/
@@ -417,20 +399,20 @@ void https_serve_response(SSL *ssl,char *filename, int range_start, int range_en
  * Parameters: the client socket descriptor
  *             FILE pointer for the file to cat */
 /**********************************************************************/
-void cat(SSL *ssl, FILE *resource, int range_start, int range_end)
+void cat(SSL *ssl, FILE *resource, int range_start, int range_end,char *buffer)
 {
     char buf[1024];
     int size;
     if (range_start == -1){
         while(!feof(resource)){
             size = fread(buf,1,1024,resource);
-            SSL_write(ssl, buf, size);
+            strcat(buffer, buf);
         }
     } else if (range_start!=-1 && range_end==-1){
         fseek(resource, range_start, SEEK_SET);
         while(!feof(resource)){
             size = fread(buf,1,1024,resource);
-            SSL_write(ssl, buf, size);
+            strcat(buffer, buf);
         }
     } else {
         fseek(resource, range_start, SEEK_SET);
@@ -445,7 +427,7 @@ void cat(SSL *ssl, FILE *resource, int range_start, int range_end)
                 size = fread(buf,1,1024,resource);
             }
             total_size += size;
-            SSL_write(ssl, buf, size);
+            strcat(buffer, buf);
         }
     }
     
