@@ -15,10 +15,12 @@
 #include <openssl/err.h>
 
  
-void *Create_80_port();
-void *Create_443_port();
+void *Create_80_port(void *);
+void *Create_443_port(void *);
 void *Handle_HTTP_Request(int cs);
 void *Handle_HTTPS_Request(void *args);
+void https_serve_response(SSL *ssl,char *filename, int range_start, int range_end);
+void cat(SSL *ssl, FILE *resource, int range_start, int range_end);
 SSL_CTX * InitSSL();
 
 struct param
@@ -44,7 +46,7 @@ int main(int argc, const char *argv[]){
 }
 
 /************************************************************************************************/
-void *Create_80_port(){
+void *Create_80_port(void * no){
     int s, cs;
     struct sockaddr_in server, client;
     
@@ -52,7 +54,7 @@ void *Create_80_port(){
     if ((s = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("create socket failed!");
         fflush(stdout);
-		return -1;
+		return NULL;
     }
     printf("socket created.\n");
     
@@ -66,7 +68,7 @@ void *Create_80_port(){
     if (bind(s,(struct sockaddr *)&server, sizeof(server)) < 0) {
         perror("bind failed!");
         fflush(stdout);
-        return -1;
+        return NULL;
     }
     printf("bind done.\n");
      
@@ -81,7 +83,7 @@ void *Create_80_port(){
         if ((cs = accept(s, (struct sockaddr *)&client, (socklen_t *)&c)) < 0) {
             perror("accept failed!");
             fflush(stdout);
-            return -1;
+            return NULL;
         }
         printf("connection accepted from port 80.\n");
         // create a thread to handle the request
@@ -155,12 +157,12 @@ void *Handle_HTTP_Request(int csock){
 
 /**************************************************************************************************/
 
-void *Create_443_port(){
+void *Create_443_port(void * no){
     // init ssl certification
     SSL_CTX *ctx = InitSSL();
     if(ctx==NULL){
         perror("init ssl error!");
-        return;
+        return NULL;
     }
 
     // create socket
@@ -169,7 +171,7 @@ void *Create_443_port(){
     if ((s = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("create socket failed!");
         fflush(stdout);
-		return -1;
+		return NULL;
     }
     printf("secure socket created.\n");
     
@@ -183,14 +185,14 @@ void *Create_443_port(){
     if (bind(s,(struct sockaddr *)&server, sizeof(server)) < 0) {
         perror("bind failed!");
         fflush(stdout);
-        return -1;
+        return NULL;
     }
     printf("bind done.\n");
      
     // listen
     listen(s, 100);
     printf("waiting for incoming connections...\n");
-     
+    SSL *ssl;
     while (1)
     {
         // accept connection from an incoming client
@@ -198,25 +200,27 @@ void *Create_443_port(){
         if ((cs = accept(s, (struct sockaddr *)&client, (socklen_t *)&c)) < 0) {
             perror("accept failed!");
             fflush(stdout);
-            return -1;
+            return NULL;
         }
 
         // create ssl connection
-        SSL *ssl = SSL_new(ctx);
+        ssl = SSL_new(ctx);
         if(ssl == NULL){
             perror("ssl new wrong!");
-            return;
+            return NULL;
         }
+        printf("new ctx;\n");
         SSL_set_accept_state(ssl);
         // connect ssl with socket fd
+        printf("set accept state\n");
         SSL_set_fd(ssl, cs);
         // ssl handshake
+        printf("set fd\n");
         if (SSL_accept(ssl) == -1){
             perror("ssl get error!");
-            return;
+            return NULL;
         }
         printf("ssl connection accepted.\n");        
-
         // create a thread to handle ssl_read/write
         pthread_t new_thread;
         struct param param1 = {ssl,cs};
@@ -224,6 +228,12 @@ void *Create_443_port(){
             perror("pthread_create failed");
     }
 
+    
+    // ssl shutdown
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    // close server socket
+    close(cs);
     SSL_CTX_free(ctx);
 }
 
@@ -260,25 +270,25 @@ void *Handle_HTTPS_Request(void *args){
     while ((msg_len = SSL_read(ssl, msg, sizeof(msg))) > 0) {
         /* parse the request */
         char *str_start = NULL;
-        char file_path[20];
         int range_start = -1;
         int range_end = -1;
-        if (str_start = strstr(msg,'10.0.0.1'))
-        {
-            str_start += 9;
-            int i=0;
-            while (*str_start != ' '){
-                file_path[i++] = *str_start;
-                str_start++;
-            }
-            file_path[i]='\0';
-        }else{
-            perror("parse request failed!");
-        	fflush(stdout);
-        	return;
-        }
 
-        if (str_start = strstr(msg,'Range'))
+        char path[50];
+        memset(path,0,sizeof(path));
+        path[0]='.';   
+        printf("%s\n",msg);
+        char *ptr;
+        //only support GET method
+    	ptr=&msg[4];
+    	int i=1;
+    	while(*ptr!=' '){
+        	path[i]=*ptr;
+        	ptr++;
+        	i++;
+    	}
+        printf("path:%s\n",path);
+        str_start = strstr(msg,"Range");
+        if (str_start != NULL)
         {
             str_start += 12;
             char tmp[10];
@@ -298,32 +308,68 @@ void *Handle_HTTPS_Request(void *args){
                 tmp[i]='\0';
                 range_end=atoi(tmp);
             }
-        }else{
-        
         }
         
         /* look up the file and make response */
-        https_serve_response(ssl, file_path, range_start, range_end);
+        printf("args:%p,%p,%d,%d\n",ssl,path,range_start,range_end);
+        //https_serve_response(ssl,path, range_start, range_end);
 
-        // ssl shutdown
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-        // close server socket
-        close(csock);
+
+FILE *file = NULL;
+    struct stat file_stat;
+    
+    char buf[1024*1024*50];
+    SSL *ssl = NULL;
+    if (stat(path, &file_stat) == -1) {
+        //no such file
+        strcpy(buf, "HTTP/1.1 404 File Not Found\r\n");
+    	strcat(buf,"Server: 10.0.0.1\r\n");
+        strcat(buf,"Connection: close\r\n");
+    	strcat(buf,"\r\n");
+    	SSL_write(ssl, buf, strlen(buf));
+    }else {
+        if((file = fopen(path, "r"))==NULL){
+            perror("open failed");
+		    return;
+        }
+        fseek(file, 0, SEEK_END);
+        int st_size = ftell(file);
+        fseek(file, 0, 0);  
+        //send HTTP header 
+        strcpy(buf, "HTTP/1.1 200 OK\r\n");
+        sprintf(buf, "Content-Type: %s\r\n",path);
+        sprintf(buf, "Content-Length: %d\r\n",st_size); 
+        strcpy(buf,"Server: 10.0.0.1\r\n");
+        strcat(buf,"\r\n");
+        SSL_write(ssl, buf, strlen(buf));
+        //send file body
+        cat(ssl, file, range_start, range_end);
+        SSL_write(ssl, buf, strlen(buf));
+        fclose(file);
     }
-     
+
+
+
+
+
+        
+        
+    }
+    
     if (msg_len == 0) {
         printf("client disconnected!");
         fflush(stdout);
     }
-    return;    
+    
+    return NULL;    
 }
 
-void https_serve_response(SSL *ssl, const char *filename, int range_start, int range_end)
+void https_serve_response(SSL *ssl,char *filename, int range_start, int range_end)
 {   
     FILE *file = NULL;
     struct stat file_stat;
     char buf[1024*1024*50];
+    //SSL *ssl = NULL;
     if (stat(filename, &file_stat) == -1) {
         /*no such file*/
         strcpy(buf, "HTTP/1.1 404 File Not Found\r\n");
@@ -342,7 +388,7 @@ void https_serve_response(SSL *ssl, const char *filename, int range_start, int r
         /*send HTTP header */
         strcpy(buf, "HTTP/1.1 200 OK\r\n");
         sprintf(buf, "Content-Type: %s\r\n",filename);
-        sprintf(buf, "Content-Length: %ld\r\n",st_size); 
+        sprintf(buf, "Content-Length: %d\r\n",st_size); 
         strcpy(buf,"Server: 10.0.0.1\r\n");
         strcat(buf,"\r\n");
         SSL_write(ssl, buf, strlen(buf));
