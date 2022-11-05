@@ -380,7 +380,7 @@ void https_serve_response(SSL *ssl,char *filename, int range_start, int range_en
         SSL_write(ssl, buffer, strlen(buffer));
         
       	/*send file body*/
-        cat(file, range_start, range_end,csock);
+        cat(ssl, file ,range_start, range_end);
         fclose(file);
         free(buffer);
     }
