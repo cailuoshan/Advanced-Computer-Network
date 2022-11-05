@@ -33,12 +33,12 @@ Ps:这一部分是否需要精简一点，图片可以换成较为清晰的PPT�
 
    HTTP协议的请求报文由请求行、请求头部、空行和请求数据4个部分组成。请求行包括请求方法（本实验仅支持GET方法）、URL、协议版本，中间以空格隔开，以回车符和换行符作为结尾。请求头部（1行或多行）由关键字/值对组成，每行一对，关键字和值用英文冒号“:”分隔。请求头部可以用于通知服务器有关于客户端请求的信息，如客户端可接受的文件类型、请求的主机名等。空行用于通知服务器请求头部的结束。请求数据不在GET方法中使用。具体的请求报文格式如图1所示。
 
-   <img src="./HTTP请求报文.png">
+   <center><img src="./HTTP请求报文.png"></center>
    <center>
    图1 HTTP请求报文
    </center>                                                               
    HTTP协议的响应报文由状态行、响应头、空行和响应体4个部分组成。状态行由协议版本号、状态码、状态消息组成，中间以空格隔开。响应头由0或多个字段组成，允许服务器传递超出状态行的附加信息，充当响应修饰符。它们提供有关服务器或有关进一步访问目标资源或相关资源的信息。空行用于通知客户端响应头的结束。响应数据为请求文件的内容。当响应状态(Response Status)为1xx/204/304，响应正文长度为0；如果使用了非"identity"的Transfer-Encoding编码方式,则响应正文长度由"chunked"编码决定,除非该消息以连接关闭为结束；如果存在"Content-Length"相应头,则响应正文长度为该数值。具体响应报文格式如图2所示。
-   <img src="./HTTP相应报文.png">
+   <center><img src="./HTTP相应报文.png"></center>
    <center>图2 响应报文格式</center>
 
 1. HTTPS协议
@@ -181,7 +181,7 @@ Ps:这一部分是否需要精简一点，图片可以换成较为清晰的PPT�
 
 ​	HTTPS服务器需要在HTTP实现socket连接的基础上，增加一层SSL加密验证，从而保障互联网传输的安全。Socket使用SSL/TLS通信对http报文进行加密的整体流程如下图所示：
 
-<img src="./SSL连接流程.png" alt="SSL连接流程" style="zoom:67%;" />
+<center><img src="./SSL连接流程.png" alt="SSL连接流程" style="zoom:67%;" /></center>
 <center>SSL连接流程</center>
 
 此外，我们的HTTPS服务器需要在实现加密通信的条件下，解析HTTP请求并在当前文件夹内查找对应文件，能够回复三种HTTP应答（200 OK、206 Partial Content、404 Not Found）和对应的文件数据。
@@ -398,18 +398,34 @@ Ps:这一部分是否需要精简一点，图片可以换成较为清晰的PPT�
 
 ### 四、测试结果
 
-1. Test.py
+1. Test.py测试通过
 
-   Test1 http请求，发送到80端口，返回301 得到新的location: https url（抓包，运行结果截图）
+在test1中，首先客户端与服务器通过“TCP三次挥手”建立连接，然后客户端发送HTTP请求到服务器的80端口，服务器返回301状态码及新的HTTPS URL，客户端和用户端断开连接。于是，客户端重新发送HTTPS请求到443端口，通过TLS协议完成连接，后续的数据包均进行加密。wireshark抓包截图如下图所示。
+<center><img src="./test1.png"></center>
+<center>test1抓包结果</center>
 
-   。。。。。
+2. VLC视频成功播放
+
+运行vlc-http-server作为服务器，vlc视频播放器通过HTTP协议向服务器请求视频，成功播放的截图如下图所示。
+<center><img src="./成功播放.png"></center>
 
 ### 五、视频传输流程分析
 
-老师的PPT-06里面有相关的介绍，可以参考。
+为了方便分析视频传输流程，我们实现了支持通过HTTP协议进行视频传输的服务器（vlc-http-server.c）。
 
-这里可以讲一下对于视频传输代码修改的部分（http，文件type之类的）
+在vlc-http-server.c中，与http-server.c类似，需要先接收并解析HTTP请求报文，从请求行中获取URL，从请求头部获取Range等信息；然后查找服务器目录下是否存在URL对应路径的文件，若没找到，则用Socket的 `write()` 方法按响应格式返回 404 File Not Found，若找到，则根据请求中的Range字段，按响应格式返回 200 OK 或 206 Partial Content，以及文件的相应部分数据。
 
+若请求的文件后缀名为`mp4`，则在响应头中添加`Content-Type: video/mpeg4\r\n`,注明文件的类型。
+
+视频传输过程中，客户端发出的HTTP请求报文如下图所示。
+<center><img src="./视频请求.png"></center>
+
+视频传输过程中，服务器发出的HTTP响应报文如下图所示。从图中可以看出，报文中给出了整个视频文件的大小，整个报文被分成了1645个TCP包。
+
+<center><img src="./视频响应.png"></center>
+
+整体传输过程如下图所示，包按照协议排序。
+<center><img src="./视频传输.png"></center>
 
 
 #### 参考资料
