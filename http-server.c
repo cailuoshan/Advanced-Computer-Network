@@ -20,7 +20,7 @@ void *Create_443_port(void *);
 void *Handle_HTTP_Request(int cs);
 void *Handle_HTTPS_Request(void *args);
 void https_serve_response(SSL *ssl,char *filename, int range_start, int range_end);
-void cat(SSL *ssl, FILE *resource, int range_start, int range_end,char *);
+void cat(SSL *ssl, FILE *resource, int range_start, int range_end);
 SSL_CTX * InitSSL();
 
 struct param
@@ -351,84 +351,61 @@ void https_serve_response(SSL *ssl,char *filename, int range_start, int range_en
             if(range_end != -1)
                 st_size = range_end - range_start;
             else{
+            	range_end = st_size;
                 st_size = st_size - range_start;
             }
             state_range = 1;
         }else{
-            
+            range_start = 0;
+            if(range_end != -1)
+                st_size = range_end - range_start;
+            else{
+            		range_end = st_size;
+                st_size = st_size - range_start;  
+            }
         }
         fseek(file, 0, 0);  
         /*send HTTP header */
-        buffer = (char *)malloc(st_size+1000);
-        memset(buffer,0,st_size+1000);
+        buffer = (char *)malloc(2000);
+        memset(buffer,0,2);
         if(!state_range)
         	strcpy(buffer, "HTTP/1.1 200 OK\r\n");
         else
         	strcpy(buffer, "HTTP/1.1 206 Partial Content\r\n");
-        sprintf(buf, "Content-Type: %s\r\n",filename);
-        strcat(buffer,buf);
         sprintf(buf, "Content-Length: %d\r\n",st_size); 
         strcat(buffer,buf);
         strcpy(buf,"Server: 10.0.0.1\r\n");
         strcat(buffer,buf);
         strcat(buffer,"\r\n");
-        //SSL_write(ssl, buf, strlen(buf));
-        /*send file body*/
-        cat(ssl, file, range_start, range_end,buffer);
         SSL_write(ssl, buffer, strlen(buffer));
+        
+      	/*send file body*/
+        cat(file, range_start, range_end,csock);
         fclose(file);
         free(buffer);
     }
-
-    /*open the file*/
-
-        /*
-        string buf_w = "HTTP/1.1 200 OK\r\n"
-                        "Content-Type: text/html; charset=UTF-8\r\n"
-                        "Connection: close\r\n"
-                        "Date: Fri, 23 Nov 2018 02:01:05 GMT\r\n"
-                        "Content-Length: " + to_string(file_stat.st_size) + "\r\n"
-                        "\r\n";
-        buf_w += (char *)html_;
-        SSL_write(ssl, (void*)buf_w.c_str(), buf_w.size());
-        munmap(html_, file_stat.st_size);*/
     
 }
+
 /**********************************************************************/
 /* Put the entire contents of a file out on a socket.  
  * Parameters: the client socket descriptor
  *             FILE pointer for the file to cat */
 /**********************************************************************/
-void cat(SSL *ssl, FILE *resource, int range_start, int range_end,char *buffer)
+void cat(SSL *ssl, FILE *resource, int range_start, int range_end)
 {
-    char buf[1024];
-    int size;
-    if (range_start == -1){
-        while(!feof(resource)){
-            size = fread(buf,1,1024,resource);
-            strcat(buffer, buf);
-        }
-    } else if (range_start!=-1 && range_end==-1){
-        fseek(resource, range_start, SEEK_SET);
-        while(!feof(resource)){
-            size = fread(buf,1,1024,resource);
-            strcat(buffer, buf);
-        }
-    } else {
-        fseek(resource, range_start, SEEK_SET);
-        int total_size = 0;
-        while (total_size < (range_end-range_start) && !feof(resource))
-        {
-            int remain_size = range_end-range_start-total_size;
-            if (remain_size <= 1024)
-            {
-                size = fread(buf,1,remain_size,resource);
-            }else{
-                size = fread(buf,1,1024,resource);
-            }
-            total_size += size;
-            strcat(buffer, buf);
-        }
-    }
-    
+	int total_size = range_end - range_start;
+	int send_size = 0;
+	fseek(resource,range_start,SEEK_SET);
+	char buf[1024];
+	while(send_size < total_size){
+		if(total_size - send_size >= 1024){
+			send_size+=fread(buf,1,1024,resource);
+			SSL_write(ssl,buf,1024);
+		}else{
+			int sz = total_size - send_size;
+			send_size+=fread(buf,1,total_size - send_size,resource);
+			SSL_write(ssl,buf,sz);
+		}
+	}
 }
