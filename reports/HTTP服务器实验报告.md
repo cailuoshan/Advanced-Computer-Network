@@ -365,7 +365,7 @@ Ps:这一部分是否需要精简一点，图片可以换成较为清晰的PPT�
            SSL_write(ssl, buffer, strlen(buffer));
            
          	/*send file body*/
-           cat(file, range_start, range_end,csock);
+           cat(ssl, file, range_start, range_end);
            fclose(file);
            free(buffer);
        }
